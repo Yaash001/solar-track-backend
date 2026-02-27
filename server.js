@@ -17,17 +17,17 @@ const server = http.createServer(app);
 // 🔥 Attach Socket.IO
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173", // Vite default
+    origin: "http://localhost:5173",
     methods: ["GET", "POST"]
   }
 });
 
-// Connect MongoDB
+// ✅ Connect MongoDB Atlas
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
-    console.log("MongoDB Connected Successfully");
+    console.log("MongoDB Atlas Connected");
 
-    // 🔥 Change Stream
+    // 🔥 Change Stream for realtime dashboard
     const changeStream = SolarReading.watch();
 
     changeStream.on("change", (change) => {
@@ -41,13 +41,52 @@ mongoose.connect(process.env.MONGO_URI)
   })
   .catch(err => console.error("MongoDB Connection Error:", err));
 
-// API route
+/* ============================
+   📡 API ROUTES FOR DASHBOARD
+   ============================ */
+
+// ✅ Get all readings (sorted by time)
 app.get("/api/solar-readings", async (req, res) => {
   try {
-    const readings = await SolarReading.find().sort({ timestamp: 1 });
+    const readings = await SolarReading
+      .find()
+      .sort({ recordedAt: 1 });
+
     res.json(readings);
   } catch (error) {
     res.status(500).json({ message: "Error fetching solar data" });
+  }
+});
+
+// ✅ Get today’s data only
+app.get("/api/solar-readings/today", async (req, res) => {
+  try {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+
+    const readings = await SolarReading.find({
+      recordedAt: { $gte: start, $lte: end }
+    }).sort({ recordedAt: 1 });
+
+    res.json(readings);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching today's data" });
+  }
+});
+
+// ✅ Get latest reading
+app.get("/api/solar-readings/latest", async (req, res) => {
+  try {
+    const latest = await SolarReading
+      .findOne()
+      .sort({ recordedAt: -1 });
+
+    res.json(latest);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching latest data" });
   }
 });
 
