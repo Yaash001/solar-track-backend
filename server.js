@@ -11,10 +11,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔥 Create HTTP server
 const server = http.createServer(app);
 
-// 🔥 Attach Socket.IO
 const io = new Server(server, {
   cors: {
     origin: "http://localhost:5173",
@@ -22,13 +20,12 @@ const io = new Server(server, {
   },
 });
 
-// ✅ Connect MongoDB Atlas
+// ✅ MongoDB Connection
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("MongoDB Atlas Connected");
 
-    // 🔥 Change Stream for realtime dashboard
     const changeStream = SolarReading.watch();
 
     changeStream.on("change", (change) => {
@@ -83,24 +80,18 @@ app.get("/api/solar-readings/latest", async (req, res) => {
   }
 });
 
-// ✅ Get daily energy (calculated)
+// ✅ DAILY ENERGY CALCULATION
 app.get("/api/daily-energy/today", async (req, res) => {
   try {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
+    const readings = await SolarReading.find().sort({ recordedAt: 1 });
 
-    const end = new Date();
-    end.setHours(23, 59, 59, 999);
+    if (readings.length < 2) {
+      return res.json({ energy: 0 });
+    }
 
-    const readings = await SolarReading.find({
-      recordedAt: { $gte: start, $lte: end },
-    }).sort({ recordedAt: 1 });
-
-    if (readings.length < 2) return res.json({ energy: 0 });
-
-    const MAX_POWER = 3.6; // Watts
+    const MAX_POWER = 3.6;
     const PANEL_EFFICIENCY = 0.65;
-    const MAX_ENERGY_LIMIT = 15; // Wh
+    const MAX_ENERGY_LIMIT = 15;
 
     let totalEnergy = 0;
 
@@ -108,29 +99,40 @@ app.get("/api/daily-energy/today", async (req, res) => {
       const prev = readings[i - 1];
       const curr = readings[i];
 
-      const elevation = Math.min(90, Math.max(0, curr.elevation));
+      const elevation = Math.min(
+        90,
+        Math.max(0, Number(curr.elevation) || 0)
+      );
+
       const elevationRad = (elevation * Math.PI) / 180;
 
-      const power = MAX_POWER * Math.sin(elevationRad) * PANEL_EFFICIENCY;
+      const power =
+        MAX_POWER * Math.sin(elevationRad) * PANEL_EFFICIENCY;
+
+      const prevTime = new Date(prev.recordedAt).getTime();
+      const currTime = new Date(curr.recordedAt).getTime();
 
       const deltaTimeHr =
-        (new Date(curr.recordedAt) - new Date(prev.recordedAt)) /
-        (1000 * 60 * 60);
+        (currTime - prevTime) / (1000 * 60 * 60);
 
       totalEnergy += power * deltaTimeHr;
     }
 
     const cappedEnergy = Math.min(totalEnergy, MAX_ENERGY_LIMIT);
 
-    res.json({ energy: cappedEnergy });
+    res.json({
+      energy: Number(cappedEnergy.toFixed(2)),
+    });
+
   } catch (err) {
-    console.error("Error calculating daily energy:", err);
-    res.status(500).json({ energy: 0, message: "Error calculating energy" });
+    res.status(500).json({ energy: 0 });
   }
 });
-
 /* ============================
-   🔥 Start Server
+   🚀 START SERVER
    ============================ */
+
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () =>
+  console.log(`Server running on port ${PORT}`)
+);
