@@ -7,6 +7,7 @@ require("dotenv").config();
 
 const SolarReading = require("./models/SolarReading");
 const DailyEnergy = require("./models/DailyEnergy");
+const MonthlyEnergy = require("./models/MonthlyEnergy");
 
 const app = express();
 app.use(cors());
@@ -22,8 +23,9 @@ const io = new Server(server, {
 });
 
 /* ======================================
-   HELPER FUNCTION: FORMAT DATE AS YYYY-MM-DD
+   HELPER FUNCTIONS
 ====================================== */
+// FORMAT DATE AS YYYY-MM-DD
 function formatDateYYYYMMDD(date) {
   const d = new Date(date);
   const year = d.getFullYear();
@@ -32,14 +34,21 @@ function formatDateYYYYMMDD(date) {
   return `${year}-${month}-${day}`;
 }
 
+// FORMAT DATE AS YYYY-MM
+function formatMonthYYYYMM(date) {
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+}
+
 /* ======================================
-   ENERGY CALCULATION (TOTAL + AVG)
+   ENERGY CALCULATION
 ====================================== */
 async function calculateAndStoreEnergy(dateInput) {
   try {
     const dateStr = formatDateYYYYMMDD(dateInput);
 
-    // Start and end of the day in UTC
     const start = new Date(dateStr + "T00:00:00");
     const end = new Date(dateStr + "T23:59:59.999");
 
@@ -64,17 +73,51 @@ async function calculateAndStoreEnergy(dateInput) {
     const totalRounded = Number(totalPower.toFixed(2));
     const avgRounded = Number(avgPower.toFixed(2));
 
-    // UPSERT daily energy using date string
+    // UPSERT daily energy
     await DailyEnergy.findOneAndUpdate(
       { date: dateStr },
       { totalPower: totalRounded, avgPower: avgRounded },
       { upsert: true, new: true }
     );
 
-    console.log("Energy updated for:", dateStr);
+    console.log("Daily Energy updated for:", dateStr);
+
+    // ALSO update monthly energy
+    await calculateAndStoreMonthlyEnergy(dateInput);
 
   } catch (err) {
-    console.error("Energy Calculation Error:", err);
+    console.error("Daily Energy Calculation Error:", err);
+  }
+}
+
+// MONTHLY ENERGY CALCULATION
+async function calculateAndStoreMonthlyEnergy(dateInput) {
+  try {
+    const monthStr = formatMonthYYYYMM(dateInput);
+
+    const dailyRecords = await DailyEnergy.find({
+      date: { $regex: `^${monthStr}-` } // all days in month
+    });
+
+    if (dailyRecords.length === 0) return;
+
+    const totalPowerSum = dailyRecords.reduce((sum, r) => sum + r.totalPower, 0);
+    const avgPowerAvg = dailyRecords.reduce((sum, r) => sum + r.avgPower, 0) / dailyRecords.length;
+
+    const totalRounded = Number(totalPowerSum.toFixed(2));
+    const avgRounded = Number(avgPowerAvg.toFixed(2));
+
+    // UPSERT monthly energy
+    await MonthlyEnergy.findOneAndUpdate(
+      { month: monthStr },
+      { totalPower: totalRounded, avgPower: avgRounded },
+      { upsert: true, new: true }
+    );
+
+    console.log("Monthly Energy updated for:", monthStr);
+
+  } catch (err) {
+    console.error("Monthly Energy Calculation Error:", err);
   }
 }
 
@@ -127,6 +170,21 @@ app.get("/api/daily-energy/today", async (req, res) => {
       avgPower: energy ? energy.avgPower : 0
     });
 
+  } catch (err) {
+    res.status(500).json({ totalPower: 0, avgPower: 0 });
+  }
+});
+
+// Current month's stored energy
+app.get("/api/monthly-energy/current", async (req, res) => {
+  try {
+    const monthStr = formatMonthYYYYMM(new Date());
+    const energy = await MonthlyEnergy.findOne({ month: monthStr });
+
+    res.json({
+      totalPower: energy ? energy.totalPower : 0,
+      avgPower: energy ? energy.avgPower : 0
+    });
   } catch (err) {
     res.status(500).json({ totalPower: 0, avgPower: 0 });
   }
