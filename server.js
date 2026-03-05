@@ -22,84 +22,65 @@ const io = new Server(server, {
 });
 
 /* ======================================
-   🔥 ENERGY CALCULATION FUNCTION
+   HELPER FUNCTION: FORMAT DATE AS YYYY-MM-DD
 ====================================== */
+function formatDateYYYYMMDD(date) {
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
-async function calculateAndStoreTodayEnergy() {
+/* ======================================
+   ENERGY CALCULATION (TOTAL + AVG)
+====================================== */
+async function calculateAndStoreEnergy(dateInput) {
   try {
-    const now = new Date();
+    const dateStr = formatDateYYYYMMDD(dateInput);
 
-    // ✅ SAME WORKING DATE LOGIC
-    const start = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate()
-    );
-
-    const end = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate() + 1
-    );
+    // Start and end of the day in UTC
+    const start = new Date(dateStr + "T00:00:00");
+    const end = new Date(dateStr + "T23:59:59.999");
 
     const readings = await SolarReading.find({
-      recordedAt: { $gte: start, $lt: end },
+      recordedAt: { $gte: start, $lte: end }
     }).sort({ recordedAt: 1 });
 
-    if (readings.length < 2) {
-      return 0;
-    }
+    if (readings.length === 0) return;
 
-    const MAX_POWER = 3.6; // kW
+    const MAX_POWER = 3.6;
     const PANEL_EFFICIENCY = 0.65;
-    const MAX_ENERGY_LIMIT = 15; // kWh
 
-    let totalEnergy = 0;
-
-    for (let i = 1; i < readings.length; i++) {
-      const prev = readings[i - 1];
-      const curr = readings[i];
-
-      const elevation = Math.min(
-        90,
-        Math.max(0, Number(curr.elevation) || 0)
-      );
-
+    let powers = readings.map((r) => {
+      const elevation = Math.min(90, Math.max(0, Number(r.elevation) || 0));
       const elevationRad = (elevation * Math.PI) / 180;
+      return MAX_POWER * Math.sin(elevationRad) * PANEL_EFFICIENCY;
+    });
 
-      const power =
-        MAX_POWER * Math.sin(elevationRad) * PANEL_EFFICIENCY;
+    const totalPower = powers.reduce((a, b) => a + b, 0);
+    const avgPower = totalPower / powers.length;
 
-      const deltaTimeHr =
-        (new Date(curr.recordedAt) - new Date(prev.recordedAt)) /
-        (1000 * 60 * 60);
+    const totalRounded = Number(totalPower.toFixed(2));
+    const avgRounded = Number(avgPower.toFixed(2));
 
-      totalEnergy += power * deltaTimeHr;
-    }
-
-    const cappedEnergy = Math.min(totalEnergy, MAX_ENERGY_LIMIT);
-    const finalEnergy = Number(cappedEnergy.toFixed(2));
-
-    // ✅ SAME WORKING SAVE LOGIC
+    // UPSERT daily energy using date string
     await DailyEnergy.findOneAndUpdate(
-      { date: start },
-      { powerOutput: finalEnergy },
-      { upsert: true,
-         returnDocument: 'after' }
+      { date: dateStr },
+      { totalPower: totalRounded, avgPower: avgRounded },
+      { upsert: true, new: true }
     );
 
-    return finalEnergy;
+    console.log("Energy updated for:", dateStr);
 
   } catch (err) {
     console.error("Energy Calculation Error:", err);
-    return 0;
   }
 }
 
 /* ======================================
-   ✅ MongoDB Connection + Change Stream
+   MONGODB CONNECTION
 ====================================== */
-
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
@@ -109,96 +90,50 @@ mongoose
 
     changeStream.on("change", async (change) => {
       if (change.operationType === "insert") {
-
         console.log("New Solar Data Inserted");
 
         io.emit("new-solar-data", change.fullDocument);
 
-        // ✅ AUTO RECALCULATE + STORE
-        await calculateAndStoreTodayEnergy();
+        const insertedDate = change.fullDocument.recordedAt;
+        await calculateAndStoreEnergy(insertedDate);
       }
     });
+
   })
   .catch((err) => console.error("MongoDB Connection Error:", err));
 
 /* ======================================
-   📡 API ROUTES
+   API ROUTES
 ====================================== */
 
-// ✅ Get all readings
+// All readings
 app.get("/api/solar-readings", async (req, res) => {
   try {
     const readings = await SolarReading.find().sort({ recordedAt: 1 });
     res.json(readings);
   } catch (err) {
-    res.status(500).json({ message: "Error fetching solar data" });
+    res.status(500).json({ message: "Error fetching data" });
   }
 });
 
-// ✅ Get today’s readings
-app.get("/api/solar-readings/today", async (req, res) => {
-  try {
-    const now = new Date();
-
-    const start = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate()
-    );
-
-    const end = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate() + 1
-    );
-
-    const readings = await SolarReading.find({
-      recordedAt: { $gte: start, $lt: end },
-    }).sort({ recordedAt: 1 });
-
-    res.json(readings);
-  } catch (err) {
-    res.status(500).json({ message: "Error fetching today's data" });
-  }
-});
-
-// ✅ Get latest reading
-app.get("/api/solar-readings/latest", async (req, res) => {
-  try {
-    const latest = await SolarReading.findOne().sort({ recordedAt: -1 });
-    res.json(latest);
-  } catch (err) {
-    res.status(500).json({ message: "Error fetching latest data" });
-  }
-});
-
-// ✅ Get today's stored energy
+// Today's stored energy
 app.get("/api/daily-energy/today", async (req, res) => {
   try {
-    const now = new Date();
-
-    const start = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate()
-    );
-
-    const energy = await DailyEnergy.findOne({ date: start });
+    const todayStr = formatDateYYYYMMDD(new Date());
+    const energy = await DailyEnergy.findOne({ date: todayStr });
 
     res.json({
-      energy: energy ? energy.powerOutput : 0,
+      totalPower: energy ? energy.totalPower : 0,
+      avgPower: energy ? energy.avgPower : 0
     });
+
   } catch (err) {
-    res.status(500).json({ energy: 0 });
+    res.status(500).json({ totalPower: 0, avgPower: 0 });
   }
 });
 
 /* ======================================
-   🚀 START SERVER
+   START SERVER
 ====================================== */
-
 const PORT = process.env.PORT || 5000;
-
-server.listen(PORT, () =>
-  console.log(`Server running on port ${PORT}`)
-);
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));

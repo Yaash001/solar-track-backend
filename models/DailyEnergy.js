@@ -2,14 +2,18 @@ const mongoose = require("mongoose");
 
 const dailyEnergySchema = new mongoose.Schema({
   date: {
-    type: Date,
+    type: String,         // changed from Date → String
     required: true,
-    unique: true, // one record per day
+    unique: true           // ensures one document per day
   },
-  powerOutput: {
-    type: Number, // stored in Wh
-    required: true,
+  totalPower: {
+    type: Number,
+    required: true
   },
+  avgPower: {
+    type: Number,
+    required: true
+  }
 });
 
 module.exports = mongoose.model("DailyEnergy", dailyEnergySchema);
